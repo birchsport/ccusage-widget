@@ -5,6 +5,7 @@ Package.resolved
 tmp/
 *.certSigningRequest
 PROMPT.md
+scratch.txt
 
 # Build artifacts
 CCUsageWidget.app/
