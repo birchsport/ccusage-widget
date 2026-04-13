@@ -1,0 +1,19 @@
+.build/
+.swiftpm/
+Package.resolved
+.claude/
+tmp/
+*.certSigningRequest
+PROMPT.md
+
+# Build artifacts
+CCUsageWidget.app/
+CCUsageWidget.zip
+CCUsageWidget.dmg
+.dmg-staging/
+
+# Team-specific signing script (contains Team ID / keychain profile)
+build-app-notarized.sh
+
+# macOS
+.DS_Store
