@@ -5,8 +5,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var panel: NSPanel?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let width: CGFloat = 280
-        let height: CGFloat = 570
+        let width: CGFloat = 320
+        let height: CGFloat = 720
 
         let screen = NSScreen.main ?? NSScreen.screens.first!
         let visible = screen.visibleFrame

@@ -3,7 +3,7 @@ import Combine
 
 @MainActor
 final class UsageViewModel: ObservableObject {
-    @Published var report: UsageReport?
+    @Published var report: CodeburnReport?
     @Published var errorMessage: String?
     @Published var isLoading: Bool = false
     @Published var lastUpdated: Date?
@@ -13,7 +13,7 @@ final class UsageViewModel: ObservableObject {
 
     init() {
         fetch()
-        Timer.publish(every: 30, on: .main, in: .common)
+        Timer.publish(every: 60, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
                 self?.fetch()
@@ -27,14 +27,10 @@ final class UsageViewModel: ObservableObject {
         currentTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let output = try await self.runCommand()
+                let jsonData = try await self.runCodeburn()
                 guard !Task.isCancelled else { return }
-                guard let data = output.data(using: .utf8) else {
-                    throw NSError(domain: "CCUsage", code: 2,
-                                  userInfo: [NSLocalizedDescriptionKey: "Invalid UTF-8 output"])
-                }
                 let decoder = JSONDecoder()
-                let parsed = try decoder.decode(UsageReport.self, from: data)
+                let parsed = try decoder.decode(CodeburnReport.self, from: jsonData)
                 self.report = parsed
                 self.errorMessage = nil
                 self.lastUpdated = Date()
@@ -47,14 +43,24 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    private func runCommand() async throws -> String {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+    /// Runs `codeburn export -f json` in a scratch directory, parses the
+    /// `Exported (...) to: <path>` line from stdout, and reads that file.
+    private func runCodeburn() async throws -> Data {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-                process.arguments = ["npx", "ccusage@latest", "--json"]
+                process.arguments = ["codeburn", "export", "-f", "json"]
 
-                // Prepend common install locations so npx resolves outside a shell.
+                // codeburn writes its json file to the current working directory,
+                // so run it from a temp dir to keep things tidy.
+                let tempDir = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("ccusage-widget", isDirectory: true)
+                try? FileManager.default.createDirectory(
+                    at: tempDir, withIntermediateDirectories: true
+                )
+                process.currentDirectoryURL = tempDir
+
                 var env = ProcessInfo.processInfo.environment
                 let extra = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
                 if let existing = env["PATH"], !existing.isEmpty {
@@ -76,20 +82,53 @@ final class UsageViewModel: ObservableObject {
                     return
                 }
 
-                let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                _ = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
 
-                let output = String(data: data, encoding: .utf8) ?? ""
-                if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+                let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+
+                if process.terminationStatus != 0 {
+                    let msg = stderr.isEmpty ? stdout : stderr
                     continuation.resume(throwing: NSError(
-                        domain: "CCUsage",
-                        code: 1,
-                        userInfo: [NSLocalizedDescriptionKey: "No output from npx ccusage. Is npx on PATH?"]
+                        domain: "CCUsage", code: Int(process.terminationStatus),
+                        userInfo: [NSLocalizedDescriptionKey:
+                            "codeburn failed: \(msg.trimmingCharacters(in: .whitespacesAndNewlines))"]
                     ))
                     return
                 }
-                continuation.resume(returning: output)
+
+                // Parse the path out of a line like:
+                //   "  Exported (...) to: /path/to/file.json"
+                let combined = stdout + "\n" + stderr
+                let path: String? = combined
+                    .split(separator: "\n")
+                    .compactMap { line -> String? in
+                        guard let range = line.range(of: "to: ") else { return nil }
+                        return String(line[range.upperBound...])
+                            .trimmingCharacters(in: .whitespaces)
+                    }
+                    .first(where: { $0.hasSuffix(".json") })
+
+                guard let jsonPath = path else {
+                    continuation.resume(throwing: NSError(
+                        domain: "CCUsage", code: 2,
+                        userInfo: [NSLocalizedDescriptionKey:
+                            "Could not find json path in codeburn output"]
+                    ))
+                    return
+                }
+
+                do {
+                    let data = try Data(contentsOf: URL(fileURLWithPath: jsonPath))
+                    // The file is regenerated on every run; remove it so we don't
+                    // accumulate stale exports in the temp dir.
+                    try? FileManager.default.removeItem(atPath: jsonPath)
+                    continuation.resume(returning: data)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
         }
     }

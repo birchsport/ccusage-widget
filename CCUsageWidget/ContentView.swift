@@ -12,6 +12,7 @@ private let accent = Color(red: 0.25, green: 0.95, blue: 0.65)
 private let opus = Color(red: 0.55, green: 0.40, blue: 1.00)
 private let haiku = Color(red: 0.25, green: 0.75, blue: 1.00)
 private let sonnet = Color(red: 1.00, green: 0.60, blue: 0.25)
+private let pink = Color(red: 1.00, green: 0.45, blue: 0.75)
 private let barBg = Color.white.opacity(0.07)
 
 private func modelColor(_ shortName: String) -> Color {
@@ -21,6 +22,14 @@ private func modelColor(_ shortName: String) -> Color {
     case "Sonnet": return sonnet
     default: return accent
     }
+}
+
+private let activityPalette: [Color] = [accent, opus, haiku, sonnet, pink,
+                                        accent.opacity(0.6), opus.opacity(0.6),
+                                        haiku.opacity(0.6)]
+
+private func activityColor(_ index: Int) -> Color {
+    activityPalette[index % activityPalette.count]
 }
 
 // MARK: - Visual effect background
@@ -48,7 +57,12 @@ struct VisualEffectView: NSViewRepresentable {
 struct ContentView: View {
     @StateObject private var vm = UsageViewModel()
     @AppStorage("panelAlpha") private var panelAlpha: Double = 0.80
+    @AppStorage("selectedPeriod") private var selectedPeriodRaw: String = PeriodKey.today.rawValue
     @State private var showSettings = false
+
+    private var selectedPeriod: PeriodKey {
+        get { PeriodKey(rawValue: selectedPeriodRaw) ?? .today }
+    }
 
     var body: some View {
         ZStack {
@@ -86,12 +100,19 @@ struct ContentView: View {
                     }
                     Spacer()
                 } else if let report = vm.report {
+                    let period = report.periods.period(for: selectedPeriod)
+
+                    periodPicker
+
                     ScrollView(.vertical, showsIndicators: false) {
                         VStack(spacing: 10) {
-                            dailyCostChart(report: report)
-                            todayTokens(report: report)
-                            todayByModel(report: report)
-                            fiveDayTotals(report: report)
+                            summaryCard(period: period)
+                            dailyCostChart(period: period)
+                            activityCard(period: period)
+                            modelsCard(period: period)
+                            projectsCard(report.projects)
+                            toolsCard(report.tools)
+                            shellCard(report.shellCommands)
                         }
                         .padding(.bottom, 4)
                     }
@@ -177,7 +198,7 @@ struct ContentView: View {
                 )
                 .onAppear { pulse = true }
 
-            Text("CC USAGE")
+            Text("CODEBURN")
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .tracking(2)
                 .foregroundColor(accent)
@@ -212,11 +233,69 @@ struct ContentView: View {
         return f.string(from: date)
     }
 
+    // MARK: Period picker
+
+    private var periodPicker: some View {
+        HStack(spacing: 4) {
+            ForEach(PeriodKey.allCases) { key in
+                let isSelected = key == selectedPeriod
+                Button(action: { selectedPeriodRaw = key.rawValue }) {
+                    Text(key.short)
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .tracking(1)
+                        .foregroundColor(isSelected ? .black : bodyText)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 5)
+                        .background(isSelected ? accent : barBg)
+                        .cornerRadius(4)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    // MARK: Summary
+
+    private func summaryCard(period: Period) -> some View {
+        let s = period.summary
+        let cols = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
+
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(s.period.uppercased())
+                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                .tracking(1.5)
+                .foregroundColor(dimText)
+
+            LazyVGrid(columns: cols, spacing: 6) {
+                totalCell(label: "COST", value: s.cost.asCost, color: accent)
+                totalCell(label: "CALLS", value: s.apiCalls.compact, color: haiku)
+                totalCell(label: "SESSIONS", value: "\(s.sessions)", color: opus)
+            }
+        }
+        .padding(10)
+        .background(surface)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor, lineWidth: 1))
+        .cornerRadius(8)
+    }
+
+    private func totalCell(label: String, value: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.system(size: 7, weight: .semibold, design: .monospaced))
+                .tracking(1)
+                .foregroundColor(dimText)
+            Text(value)
+                .font(.system(size: 15, weight: .bold, design: .monospaced))
+                .foregroundColor(color)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     // MARK: Daily cost chart
 
-    private func dailyCostChart(report: UsageReport) -> some View {
-        let days = report.daily
-        let maxCost = max(days.map { $0.totalCost }.max() ?? 1, 0.01)
+    private func dailyCostChart(period: Period) -> some View {
+        let days = period.daily
+        let maxCost = max(days.map { $0.cost }.max() ?? 1, 0.01)
 
         return VStack(alignment: .leading, spacing: 8) {
             Text("DAILY COST")
@@ -224,76 +303,28 @@ struct ContentView: View {
                 .tracking(1.5)
                 .foregroundColor(dimText)
 
-            HStack(alignment: .bottom, spacing: 4) {
-                ForEach(days) { day in
-                    VStack(spacing: 3) {
-                        Text(day.totalCost.asCost)
-                            .font(.system(size: 7, design: .monospaced))
-                            .foregroundColor(day.isToday ? accent : dimText)
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(day.isToday ? accent : accent.opacity(0.35))
-                            .frame(
-                                height: max(CGFloat(day.totalCost / maxCost) * 52, 3)
-                            )
-                        Text(day.shortDate)
-                            .font(.system(size: 7, design: .monospaced))
-                            .foregroundColor(day.isToday ? accent : dimText)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-            }
-        }
-        .padding(10)
-        .background(surface)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor, lineWidth: 1))
-        .cornerRadius(8)
-    }
-
-    // MARK: Today tokens
-
-    private func todayTokens(report: UsageReport) -> some View {
-        let today = report.daily.first(where: { $0.isToday }) ?? report.daily.last
-
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("TODAY'S TOKENS")
-                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                    .tracking(1.5)
+            if days.isEmpty {
+                Text("no data")
+                    .font(.system(size: 9, design: .monospaced))
                     .foregroundColor(dimText)
-                Spacer()
-                if let t = today {
-                    Text(t.totalTokens.compactTokens)
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        .foregroundColor(accent)
-                }
-            }
-
-            if let t = today {
-                let total = max(t.totalTokens, 1)
-                let segments: [(Int, Color)] = [
-                    (t.cacheReadTokens, accent.opacity(0.8)),
-                    (t.cacheCreationTokens, opus.opacity(0.8)),
-                    (t.outputTokens, haiku.opacity(0.8)),
-                    (t.inputTokens, sonnet.opacity(0.8))
-                ]
-
-                GeometryReader { geo in
-                    HStack(spacing: 0) {
-                        ForEach(Array(segments.enumerated()), id: \.offset) { _, seg in
-                            Rectangle()
-                                .fill(seg.1)
-                                .frame(width: geo.size.width * CGFloat(seg.0) / CGFloat(total))
+            } else {
+                HStack(alignment: .bottom, spacing: 4) {
+                    ForEach(days) { day in
+                        VStack(spacing: 3) {
+                            Text(day.cost.asCost)
+                                .font(.system(size: 7, design: .monospaced))
+                                .foregroundColor(day.isToday ? accent : dimText)
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(day.isToday ? accent : accent.opacity(0.35))
+                                .frame(
+                                    height: max(CGFloat(day.cost / maxCost) * 52, 3)
+                                )
+                            Text(day.shortDate)
+                                .font(.system(size: 7, design: .monospaced))
+                                .foregroundColor(day.isToday ? accent : dimText)
                         }
+                        .frame(maxWidth: .infinity)
                     }
-                    .cornerRadius(3)
-                }
-                .frame(height: 6)
-
-                VStack(spacing: 4) {
-                    legendRow(color: accent.opacity(0.8), label: "Cache Read", value: t.cacheReadTokens)
-                    legendRow(color: opus.opacity(0.8), label: "Cache Write", value: t.cacheCreationTokens)
-                    legendRow(color: haiku.opacity(0.8), label: "Output", value: t.outputTokens)
-                    legendRow(color: sonnet.opacity(0.8), label: "Input", value: t.inputTokens)
                 }
             }
         }
@@ -303,33 +334,63 @@ struct ContentView: View {
         .cornerRadius(8)
     }
 
-    private func legendRow(color: Color, label: String, value: Int) -> some View {
-        HStack(spacing: 6) {
-            Circle().fill(color).frame(width: 5, height: 5)
-            Text(label)
-                .font(.system(size: 9, design: .monospaced))
-                .foregroundColor(bodyText)
-            Spacer()
-            Text(value.compactTokens)
-                .font(.system(size: 9, design: .monospaced))
-                .foregroundColor(bodyText)
-        }
-    }
+    // MARK: Activity
 
-    // MARK: Today by model
-
-    private func todayByModel(report: UsageReport) -> some View {
-        let today = report.daily.first(where: { $0.isToday }) ?? report.daily.last
-        let breakdowns = today?.modelBreakdowns ?? []
-        let maxCost = max(breakdowns.map { $0.cost }.max() ?? 1, 0.01)
+    private func activityCard(period: Period) -> some View {
+        let items = period.activity
+        let maxCost = max(items.map { $0.cost }.max() ?? 1, 0.01)
 
         return VStack(alignment: .leading, spacing: 8) {
-            Text("TODAY BY MODEL")
+            Text("ACTIVITY")
                 .font(.system(size: 8, weight: .semibold, design: .monospaced))
                 .tracking(1.5)
                 .foregroundColor(dimText)
 
-            ForEach(Array(breakdowns.enumerated()), id: \.offset) { idx, m in
+            ForEach(Array(items.enumerated()), id: \.offset) { idx, a in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(a.activity)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(bodyText)
+                        Spacer()
+                        Text("\(a.turns)t")
+                            .font(.system(size: 8, design: .monospaced))
+                            .foregroundColor(dimText)
+                        Text(a.cost.asCost)
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(bodyText)
+                    }
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 1.5).fill(barBg)
+                            RoundedRectangle(cornerRadius: 1.5)
+                                .fill(activityColor(idx))
+                                .frame(width: geo.size.width * CGFloat(a.cost / maxCost))
+                        }
+                    }
+                    .frame(height: 3)
+                }
+            }
+        }
+        .padding(10)
+        .background(surface)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor, lineWidth: 1))
+        .cornerRadius(8)
+    }
+
+    // MARK: Models
+
+    private func modelsCard(period: Period) -> some View {
+        let items = period.models
+        let maxCost = max(items.map { $0.cost }.max() ?? 1, 0.01)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("MODELS")
+                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                .tracking(1.5)
+                .foregroundColor(dimText)
+
+            ForEach(Array(items.enumerated()), id: \.offset) { idx, m in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
                         Text(m.shortName)
@@ -352,13 +413,13 @@ struct ContentView: View {
                     .frame(height: 3)
 
                     HStack(spacing: 6) {
+                        statPill(label: "calls", value: m.apiCalls)
                         statPill(label: "in", value: m.inputTokens)
                         statPill(label: "out", value: m.outputTokens)
-                        statPill(label: "cr", value: m.cacheReadTokens)
                     }
                 }
 
-                if idx < breakdowns.count - 1 {
+                if idx < items.count - 1 {
                     Divider().background(borderColor)
                 }
             }
@@ -374,7 +435,7 @@ struct ContentView: View {
             Text(label)
                 .font(.system(size: 8, design: .monospaced))
                 .foregroundColor(dimText)
-            Text(value.compactTokens)
+            Text(value.compact)
                 .font(.system(size: 8, weight: .semibold, design: .monospaced))
                 .foregroundColor(bodyText)
         }
@@ -384,23 +445,48 @@ struct ContentView: View {
         .cornerRadius(3)
     }
 
-    // MARK: 5-day totals
+    // MARK: Projects
 
-    private func fiveDayTotals(report: UsageReport) -> some View {
-        let t = report.totals
-        let cols = [GridItem(.flexible()), GridItem(.flexible())]
+    private func projectsCard(_ all: [ProjectStat]) -> some View {
+        let items = Array(all.prefix(5))
+        let maxCost = max(items.map { $0.cost }.max() ?? 1, 0.01)
 
         return VStack(alignment: .leading, spacing: 8) {
-            Text("5-DAY TOTALS")
+            Text("PROJECTS")
                 .font(.system(size: 8, weight: .semibold, design: .monospaced))
                 .tracking(1.5)
                 .foregroundColor(dimText)
 
-            LazyVGrid(columns: cols, spacing: 10) {
-                totalCell(label: "COST", value: t.totalCost.asCost, color: accent)
-                totalCell(label: "TOKENS", value: t.totalTokens.compactTokens, color: bodyText)
-                totalCell(label: "OUTPUT", value: t.outputTokens.compactTokens, color: haiku)
-                totalCell(label: "CACHE↑", value: t.cacheCreationTokens.compactTokens, color: opus)
+            ForEach(Array(items.enumerated()), id: \.offset) { idx, p in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(p.displayName)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(bodyText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Text(p.cost.asCost)
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(bodyText)
+                    }
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 1.5).fill(barBg)
+                            RoundedRectangle(cornerRadius: 1.5)
+                                .fill(accent.opacity(0.7))
+                                .frame(width: geo.size.width * CGFloat(p.cost / maxCost))
+                        }
+                    }
+                    .frame(height: 3)
+                    HStack(spacing: 6) {
+                        statPill(label: "calls", value: p.apiCalls)
+                        statPill(label: "sess", value: p.sessions)
+                    }
+                }
+                if idx < items.count - 1 {
+                    Divider().background(borderColor)
+                }
             }
         }
         .padding(10)
@@ -409,16 +495,83 @@ struct ContentView: View {
         .cornerRadius(8)
     }
 
-    private func totalCell(label: String, value: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label)
-                .font(.system(size: 7, weight: .semibold, design: .monospaced))
-                .tracking(1)
+    // MARK: Tools
+
+    private func toolsCard(_ all: [ToolStat]) -> some View {
+        let items = Array(all.prefix(8))
+        let maxCalls = max(items.map { $0.calls }.max() ?? 1, 1)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("TOOLS")
+                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                .tracking(1.5)
                 .foregroundColor(dimText)
-            Text(value)
-                .font(.system(size: 14, weight: .bold, design: .monospaced))
-                .foregroundColor(color)
+
+            ForEach(Array(items.enumerated()), id: \.offset) { _, t in
+                HStack(spacing: 8) {
+                    Text(t.tool)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(bodyText)
+                        .frame(width: 72, alignment: .leading)
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 1.5).fill(barBg)
+                            RoundedRectangle(cornerRadius: 1.5)
+                                .fill(haiku.opacity(0.8))
+                                .frame(width: geo.size.width * CGFloat(t.calls) / CGFloat(maxCalls))
+                        }
+                    }
+                    .frame(height: 3)
+                    Text("\(t.calls)")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundColor(bodyText)
+                        .frame(width: 32, alignment: .trailing)
+                }
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(surface)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor, lineWidth: 1))
+        .cornerRadius(8)
+    }
+
+    // MARK: Shell commands
+
+    private func shellCard(_ all: [ShellCommandStat]) -> some View {
+        let items = Array(all.prefix(8))
+        let maxCalls = max(items.map { $0.calls }.max() ?? 1, 1)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("SHELL COMMANDS")
+                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                .tracking(1.5)
+                .foregroundColor(dimText)
+
+            ForEach(Array(items.enumerated()), id: \.offset) { _, c in
+                HStack(spacing: 8) {
+                    Text(c.command)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(bodyText)
+                        .frame(width: 72, alignment: .leading)
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 1.5).fill(barBg)
+                            RoundedRectangle(cornerRadius: 1.5)
+                                .fill(sonnet.opacity(0.8))
+                                .frame(width: geo.size.width * CGFloat(c.calls) / CGFloat(maxCalls))
+                        }
+                    }
+                    .frame(height: 3)
+                    Text("\(c.calls)")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundColor(bodyText)
+                        .frame(width: 32, alignment: .trailing)
+                }
+            }
+        }
+        .padding(10)
+        .background(surface)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor, lineWidth: 1))
+        .cornerRadius(8)
     }
 }
