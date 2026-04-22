@@ -215,7 +215,7 @@ struct ContentView: View {
     // MARK: Daily cost chart
 
     private func dailyCostChart(report: UsageReport) -> some View {
-        let days = report.daily
+        let days = report.daily.suffix(5)
         let maxCost = max(days.map { $0.totalCost }.max() ?? 1, 0.01)
 
         return VStack(alignment: .leading, spacing: 8) {
