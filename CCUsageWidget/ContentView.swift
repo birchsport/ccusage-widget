@@ -92,6 +92,7 @@ struct ContentView: View {
                             todayTokens(report: report)
                             todayByModel(report: report)
                             fiveDayTotals(report: report)
+                            allTimeTotals(report: report)
                         }
                         .padding(.bottom, 4)
                     }
@@ -384,23 +385,58 @@ struct ContentView: View {
         .cornerRadius(3)
     }
 
-    // MARK: 5-day totals
+    // MARK: Totals
 
+    /// Sum of the same trailing window the daily chart shows, so the
+    /// "5-DAY TOTALS" label stays truthful and matches the bars above.
     private func fiveDayTotals(report: UsageReport) -> some View {
+        let days = report.daily.suffix(5)
+        let cost = days.reduce(0) { $0 + $1.totalCost }
+        let tokens = days.reduce(0) { $0 + $1.totalTokens }
+        let output = days.reduce(0) { $0 + $1.outputTokens }
+        let cacheCreate = days.reduce(0) { $0 + $1.cacheCreationTokens }
+
+        return totalsCard(
+            title: "5-DAY TOTALS",
+            cost: cost,
+            tokens: tokens,
+            output: output,
+            cacheCreate: cacheCreate
+        )
+    }
+
+    /// ccusage's grand total across the full history it reports.
+    private func allTimeTotals(report: UsageReport) -> some View {
         let t = report.totals
+        return totalsCard(
+            title: "ALL TIME",
+            cost: t.totalCost,
+            tokens: t.totalTokens,
+            output: t.outputTokens,
+            cacheCreate: t.cacheCreationTokens
+        )
+    }
+
+    private func totalsCard(
+        title: String,
+        cost: Double,
+        tokens: Int,
+        output: Int,
+        cacheCreate: Int
+    ) -> some View {
         let cols = [GridItem(.flexible()), GridItem(.flexible())]
 
         return VStack(alignment: .leading, spacing: 8) {
-            Text("5-DAY TOTALS")
+            Text(title)
                 .font(.system(size: 8, weight: .semibold, design: .monospaced))
                 .tracking(1.5)
                 .foregroundColor(dimText)
 
             LazyVGrid(columns: cols, spacing: 10) {
-                totalCell(label: "COST", value: t.totalCost.asCost, color: accent)
-                totalCell(label: "TOKENS", value: t.totalTokens.compactTokens, color: bodyText)
-                totalCell(label: "OUTPUT", value: t.outputTokens.compactTokens, color: haiku)
-                totalCell(label: "CACHE↑", value: t.cacheCreationTokens.compactTokens, color: opus)
+                totalCell(label: "COST", value: cost.asCost, color: accent)
+                totalCell(label: "TOKENS", value: tokens.compactTokens, color: bodyText)
+                totalCell(label: "OUTPUT", value: output.compactTokens, color: haiku)
+                totalCell(label: "CACHE↑", value: cacheCreate.compactTokens, color: opus)
             }
         }
         .padding(10)
