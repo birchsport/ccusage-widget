@@ -3,10 +3,14 @@ set -euo pipefail
 
 APP_NAME="CCUsageWidget"
 APP="${APP_NAME}.app"
-BUILD_DIR=".build/apple/Products/Release"
+BUILD_ARGS=(-c release --arch arm64 --arch x86_64)
 
 echo "==> Building universal release binary"
-swift build -c release --arch arm64 --arch x86_64
+swift build "${BUILD_ARGS[@]}"
+
+# Ask SwiftPM for the output dir (it moved from .build/apple to .build/out in
+# newer toolchains; hardcoding it shipped a stale binary).
+BUILD_DIR=$(swift build "${BUILD_ARGS[@]}" --show-bin-path)
 
 if [[ ! -f "${BUILD_DIR}/${APP_NAME}" ]]; then
     echo "error: binary not found at ${BUILD_DIR}/${APP_NAME}" >&2

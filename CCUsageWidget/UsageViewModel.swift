@@ -52,7 +52,9 @@ final class UsageViewModel: ObservableObject {
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-                process.arguments = ["npx", "ccusage@latest", "--json"]
+                // Pinned: ccusage's JSON shape changes between releases (e.g. 20.x
+                // renamed `date` -> `period`). Bump deliberately after checking output.
+                process.arguments = ["npx", "ccusage@20.0.20", "--json"]
 
                 // Prepend common install locations so npx resolves outside a shell.
                 var env = ProcessInfo.processInfo.environment
