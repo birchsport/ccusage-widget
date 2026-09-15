@@ -13,6 +13,7 @@ private let opus = Color(red: 0.55, green: 0.40, blue: 1.00)
 private let haiku = Color(red: 0.25, green: 0.75, blue: 1.00)
 private let sonnet = Color(red: 1.00, green: 0.60, blue: 0.25)
 private let barBg = Color.white.opacity(0.07)
+private let hot = Color(red: 1.00, green: 0.35, blue: 0.35)
 
 private func modelColor(_ shortName: String) -> Color {
     switch shortName {
@@ -50,6 +51,8 @@ struct ContentView: View {
     @AppStorage("panelAlpha") private var panelAlpha: Double = 0.80
     @State private var showSettings = false
     @AppStorage("chartDays") private var chartDays: Int = 7
+    @AppStorage("contextWindow") private var contextWindow: Int = 200_000
+    @AppStorage("collapsedCards") private var collapsedCards: String = ""  // comma-separated card ids
     @State private var hoveredDay: String?
     @State private var dragStart: (mouse: NSPoint, origin: NSPoint)?
 
@@ -91,6 +94,7 @@ struct ContentView: View {
                 } else if let report = vm.report {
                     ScrollView(.vertical, showsIndicators: false) {
                         VStack(spacing: 10) {
+                            nowCard
                             dailyCostChart(report: report)
                             todayTokens(report: report)
                             todayByModel(report: report)
@@ -161,6 +165,16 @@ struct ContentView: View {
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundColor(dimText)
                     .frame(width: 32, alignment: .trailing)
+            }
+
+            // Transcripts don't record whether a session uses the 1M option,
+            // so the denominator is a setting (auto-bumped past 200K).
+            HStack(spacing: 8) {
+                Text("Context window")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(bodyText)
+                Spacer()
+                segmented([(200_000, "200K"), (1_000_000, "1M")], selection: $contextWindow)
             }
 
             Button(action: { NSApp.terminate(nil) }) {
@@ -271,16 +285,7 @@ struct ContentView: View {
         // In 7-day mode 12pt of the 64pt plot goes to the cost label above each bar.
         let barMax: CGFloat = dense ? 64 : 52
 
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("DAILY COST")
-                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                    .tracking(1.5)
-                    .foregroundColor(dimText)
-                Spacer()
-                rangePicker
-            }
-
+        return card("dailyCost", "DAILY COST", trailing: { rangePicker }) {
             HStack(alignment: .bottom, spacing: spacing) {
                 ForEach(days) { day in
                     let lit = day.isToday || day.id == hoveredDay
@@ -333,10 +338,6 @@ struct ContentView: View {
                 }
             }
         }
-        .padding(10)
-        .background(surface)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor, lineWidth: 1))
-        .cornerRadius(8)
     }
 
     /// Hovered day's cost, or the window's daily average when nothing is hovered.
@@ -349,15 +350,22 @@ struct ContentView: View {
     }
 
     private var rangePicker: some View {
+        segmented(Self.chartRanges.map { ($0, "\($0)D") }, selection: $chartDays)
+    }
+
+    /// Small pill-style picker matching the widget's monospaced chrome.
+    private func segmented(_ options: [(Int, String)], selection: Binding<Int>) -> some View {
         HStack(spacing: 2) {
-            ForEach(Self.chartRanges, id: \.self) { n in
-                Button(action: { chartDays = n }) {
-                    Text("\(n)D")
+            ForEach(options.indices, id: \.self) { i in
+                let (value, label) = options[i]
+                let selected = selection.wrappedValue == value
+                Button(action: { selection.wrappedValue = value }) {
+                    Text(label)
                         .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                        .foregroundColor(chartDays == n ? accent : dimText)
+                        .foregroundColor(selected ? accent : dimText)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
-                        .background(chartDays == n ? barBg : Color.clear)
+                        .background(selected ? barBg : Color.clear)
                         .cornerRadius(3)
                 }
                 .buttonStyle(.plain)
@@ -365,25 +373,208 @@ struct ContentView: View {
         }
     }
 
+    // MARK: Card chrome
+
+    /// Shared card frame. Clicking the title row rolls the card up to just
+    /// that row and back; collapsed ids persist in `collapsedCards`. Header
+    /// extras (`trailing`) hide while collapsed so only the title remains.
+    private func card<Trailing: View, Content: View>(
+        _ id: String,
+        _ title: String,
+        @ViewBuilder trailing: () -> Trailing,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        let collapsed = isCollapsed(id)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Button(action: { toggleCollapsed(id) }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 7, weight: .bold))
+                            .rotationEffect(.degrees(collapsed ? 0 : 90))
+                        Text(title)
+                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                            .tracking(1.5)
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundColor(dimText)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(collapsed ? "Expand" : "Collapse")
+
+                if !collapsed { trailing() }
+            }
+            if !collapsed { content() }
+        }
+        .padding(10)
+        .background(surface)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor, lineWidth: 1))
+        .cornerRadius(8)
+    }
+
+    private func card<Content: View>(
+        _ id: String,
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        card(id, title, trailing: { EmptyView() }, content: content)
+    }
+
+    private func isCollapsed(_ id: String) -> Bool {
+        collapsedCards.split(separator: ",").contains { $0 == id }
+    }
+
+    private func toggleCollapsed(_ id: String) {
+        var ids = Set(collapsedCards.split(separator: ",").map(String.init))
+        if ids.contains(id) { ids.remove(id) } else { ids.insert(id) }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            collapsedCards = ids.sorted().joined(separator: ",")
+        }
+    }
+
+    // MARK: Now
+
+    /// Current 5-hour block (`ccusage blocks --active`) and the latest
+    /// session's context fill (read from its transcript). Both are
+    /// best-effort; each row falls back to a one-line note when data is
+    /// missing. The timeline keeps countdown and idle text ticking between
+    /// data refreshes.
+    private var nowCard: some View {
+        card("now", "NOW") {
+            TimelineView(.periodic(from: Date(), by: 5)) { timeline in
+                VStack(alignment: .leading, spacing: 8) {
+                    blockRow(now: timeline.date)
+                    Divider().background(borderColor)
+                    contextRows(now: timeline.date)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func blockRow(now: Date) -> some View {
+        if let block = vm.activeBlock, block.endTime > now {
+            let span = block.endTime.timeIntervalSince(block.startTime)
+            let elapsed = span > 0 ? now.timeIntervalSince(block.startTime) / span : 0
+            VStack(alignment: .leading, spacing: 5) {
+                HStack {
+                    Text("5h block · resets \(clockString(block.endTime))")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(bodyText)
+                    Spacer()
+                    Text("\(durationString(block.endTime.timeIntervalSince(now))) left")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundColor(accent)
+                }
+                meter(fraction: elapsed, color: accent)
+                Text(blockDetail(block))
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundColor(dimText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+        } else {
+            Text("No active 5h block; your next message starts one")
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundColor(dimText)
+        }
+    }
+
+    private func blockDetail(_ block: UsageBlock) -> String {
+        var parts = ["\(block.costUSD.asCost) so far"]
+        if let rate = block.burnRate { parts.append("\(rate.costPerHour.asCost)/hr") }
+        if let projected = block.projection { parts.append("~\(projected.totalCost.asCost) at reset") }
+        return parts.joined(separator: " · ")
+    }
+
+    /// One row per recently active session (up to 3, newest first), or the
+    /// last session alone when nothing is recent; see `SessionContextReader.recent`.
+    @ViewBuilder
+    private func contextRows(now: Date) -> some View {
+        if vm.contexts.isEmpty {
+            Text("No Claude Code session transcripts found")
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundColor(dimText)
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(vm.contexts) { ctx in
+                    contextRow(ctx, now: now)
+                }
+            }
+        }
+    }
+
+    private func contextRow(_ ctx: SessionContext, now: Date) -> some View {
+        // More tokens than the chosen window means the session must be on 1M.
+        let window = ctx.tokens > contextWindow ? 1_000_000 : contextWindow
+        let fraction = min(Double(ctx.tokens) / Double(window), 1)
+        let color = fraction < 0.5 ? accent : (fraction < 0.8 ? sonnet : hot)
+        let idle = now.timeIntervalSince(ctx.updated)
+        let model = ctx.model.map(shortModelName) ?? "Claude"
+
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Text("Context")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(bodyText)
+                Text(ctx.project)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(dimText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Text("\(ctx.tokens.compactTokens) / \(window == 1_000_000 ? "1M" : window.compactTokens)")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundColor(color)
+            }
+            meter(fraction: fraction, color: color)
+            Text("\(model) · \(Int((fraction * 100).rounded()))% full · "
+                 + (idle < 120 ? "active" : "idle \(durationString(idle))"))
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundColor(dimText)
+                .lineLimit(1)
+        }
+        // An old session's context is history, not "now"; fade it.
+        .opacity(idle > 30 * 60 ? 0.55 : 1)
+    }
+
+    private func meter(fraction: Double, color: Color) -> some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 1.5).fill(barBg)
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(color)
+                    .frame(width: geo.size.width * CGFloat(min(max(fraction, 0), 1)))
+            }
+        }
+        .frame(height: 3)
+    }
+
+    private func durationString(_ seconds: TimeInterval) -> String {
+        let minutes = max(Int(seconds / 60), 0)
+        if minutes >= 24 * 60 { return "\(minutes / (24 * 60))d" }
+        return minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
+    }
+
+    private func clockString(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f.string(from: date)
+    }
+
     // MARK: Today tokens
 
     private func todayTokens(report: UsageReport) -> some View {
         let today = report.daily.first(where: { $0.isToday }) ?? report.daily.last
 
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("TODAY'S TOKENS")
-                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                    .tracking(1.5)
-                    .foregroundColor(dimText)
-                Spacer()
-                if let t = today {
-                    Text(t.totalTokens.compactTokens)
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        .foregroundColor(accent)
-                }
+        return card("todayTokens", "TODAY'S TOKENS", trailing: {
+            if let t = today {
+                Text(t.totalTokens.compactTokens)
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundColor(accent)
             }
-
+        }) {
             if let t = today {
                 let total = max(t.totalTokens, 1)
                 let segments: [(Int, Color)] = [
@@ -413,10 +604,6 @@ struct ContentView: View {
                 }
             }
         }
-        .padding(10)
-        .background(surface)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor, lineWidth: 1))
-        .cornerRadius(8)
     }
 
     private func legendRow(color: Color, label: String, value: Int) -> some View {
@@ -439,12 +626,7 @@ struct ContentView: View {
         let breakdowns = today?.modelBreakdowns ?? []
         let maxCost = max(breakdowns.map { $0.cost }.max() ?? 1, 0.01)
 
-        return VStack(alignment: .leading, spacing: 8) {
-            Text("TODAY BY MODEL")
-                .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                .tracking(1.5)
-                .foregroundColor(dimText)
-
+        return card("todayByModel", "TODAY BY MODEL") {
             ForEach(Array(breakdowns.enumerated()), id: \.offset) { idx, m in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
@@ -479,10 +661,6 @@ struct ContentView: View {
                 }
             }
         }
-        .padding(10)
-        .background(surface)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor, lineWidth: 1))
-        .cornerRadius(8)
     }
 
     private func statPill(label: String, value: Int) -> some View {
@@ -513,6 +691,7 @@ struct ContentView: View {
         let cacheCreate = days.reduce(0) { $0 + $1.cacheCreationTokens }
 
         return totalsCard(
+            id: "windowTotals",  // stable even though the title follows the range
             title: "\(chartDays)-DAY TOTALS",
             cost: cost,
             tokens: tokens,
@@ -525,6 +704,7 @@ struct ContentView: View {
     private func allTimeTotals(report: UsageReport) -> some View {
         let t = report.totals
         return totalsCard(
+            id: "allTime",
             title: "ALL TIME",
             cost: t.totalCost,
             tokens: t.totalTokens,
@@ -534,6 +714,7 @@ struct ContentView: View {
     }
 
     private func totalsCard(
+        id: String,
         title: String,
         cost: Double,
         tokens: Int,
@@ -542,12 +723,7 @@ struct ContentView: View {
     ) -> some View {
         let cols = [GridItem(.flexible()), GridItem(.flexible())]
 
-        return VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                .tracking(1.5)
-                .foregroundColor(dimText)
-
+        return card(id, title) {
             LazyVGrid(columns: cols, spacing: 10) {
                 totalCell(label: "COST", value: cost.asCost, color: accent)
                 totalCell(label: "TOKENS", value: tokens.compactTokens, color: bodyText)
@@ -555,10 +731,6 @@ struct ContentView: View {
                 totalCell(label: "CACHE↑", value: cacheCreate.compactTokens, color: opus)
             }
         }
-        .padding(10)
-        .background(surface)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor, lineWidth: 1))
-        .cornerRadius(8)
     }
 
     private func totalCell(label: String, value: String, color: Color) -> some View {

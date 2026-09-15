@@ -111,14 +111,54 @@ extension DailyUsage {
     }
 }
 
+/// "claude-opus-5" -> "Opus"; unknown families pass through unchanged.
+func shortModelName(_ modelName: String) -> String {
+    let lower = modelName.lowercased()
+    if lower.contains("opus") { return "Opus" }
+    if lower.contains("haiku") { return "Haiku" }
+    if lower.contains("sonnet") { return "Sonnet" }
+    if lower.contains("fable") { return "Fable" }
+    return modelName
+}
+
 extension ModelBreakdown {
-    var shortName: String {
-        let lower = modelName.lowercased()
-        if lower.contains("opus") { return "Opus" }
-        if lower.contains("haiku") { return "Haiku" }
-        if lower.contains("sonnet") { return "Sonnet" }
-        return modelName
-    }
+    var shortName: String { shortModelName(modelName) }
+}
+
+// MARK: - Billing blocks (`ccusage blocks --active --json`)
+
+struct BlocksReport: Decodable {
+    let blocks: [UsageBlock]
+}
+
+/// ccusage's reconstruction of the 5-hour usage window from local logs. It
+/// can't see usage from other machines or claude.ai, nor real plan limits.
+struct UsageBlock: Decodable {
+    let startTime: Date
+    let endTime: Date
+    let isActive: Bool
+    let costUSD: Double
+    let totalTokens: Int
+    let burnRate: BurnRate?
+    let projection: Projection?
+
+    struct BurnRate: Decodable { let costPerHour: Double }
+    struct Projection: Decodable { let totalCost: Double }
+
+    /// ccusage emits ISO 8601 with fractional seconds ("2026-09-15T19:00:00.000Z").
+    static let decoder: JSONDecoder = {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .custom { decoder in
+            let s = try decoder.singleValueContainer().decode(String.self)
+            if let date = fractional.date(from: s) ?? plain.date(from: s) { return date }
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "Unrecognized date: \(s)"))
+        }
+        return d
+    }()
 }
 
 extension Double {

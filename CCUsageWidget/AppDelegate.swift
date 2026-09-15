@@ -6,7 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let width: CGFloat = 280
-        let height: CGFloat = 680
+        let height: CGFloat = 820  // fits a NOW card with two sessions without scrolling
 
         let screen = NSScreen.main ?? NSScreen.screens.first!
         let visible = screen.visibleFrame
