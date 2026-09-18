@@ -8,6 +8,9 @@ final class UsageViewModel: ObservableObject {
     @Published var isLoading: Bool = false
     @Published var lastUpdated: Date?
     @Published var activeBlock: UsageBlock?
+    /// Cost of the costliest finished 5h block; the stand-in for the plan's
+    /// real (locally invisible) limit when estimating how much is left.
+    @Published var peakBlockCost: Double?
     @Published var contexts: [SessionContext] = []
 
     private var cancellables = Set<AnyCancellable>()
@@ -47,7 +50,9 @@ final class UsageViewModel: ObservableObject {
             do {
                 // Runs alongside the daily report. Best-effort: a failure here
                 // leaves the last block in place rather than blanking the panel.
-                async let blocksOutput = try? self.runCommand(["blocks", "--active", "--json"])
+                // All blocks, not `--active`: the history gives the peak, and the
+                // active block still carries its burn rate and projection.
+                async let blocksOutput = try? self.runCommand(["blocks", "--json"])
                 let output = try await self.runCommand(["--json"])
                 guard !Task.isCancelled else { return }
                 guard let data = output.data(using: .utf8) else {
@@ -64,6 +69,8 @@ final class UsageViewModel: ObservableObject {
                    let blocksData = out.data(using: .utf8),
                    let blocks = try? UsageBlock.decoder.decode(BlocksReport.self, from: blocksData) {
                     self.activeBlock = blocks.blocks.first { $0.isActive }
+                    let peak = blocks.blocks.filter { !$0.isActive }.map(\.costUSD).max() ?? 0
+                    self.peakBlockCost = peak > 0 ? peak : nil
                 }
             } catch {
                 if !Task.isCancelled {

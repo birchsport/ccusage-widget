@@ -2,28 +2,21 @@ import AppKit
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    var panel: NSPanel?
+    var panel: DockPanel?
+    var dock: DockController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let width: CGFloat = 280
-        let height: CGFloat = 820  // fits a NOW card with two sessions without scrolling
+        let dock = DockController()
+        let frame = dock.frame(expanded: dock.expanded)
 
-        let screen = NSScreen.main ?? NSScreen.screens.first!
-        let visible = screen.visibleFrame
-        let x = visible.maxX - width - 20
-        let y = visible.maxY - (height + 20)
-
-        let panel = NSPanel(
-            contentRect: NSRect(x: x, y: y, width: width, height: height),
-            styleMask: [.nonactivatingPanel, .fullSizeContentView, .borderless, .resizable],
+        // Not movable and only resizable while expanded; DockController owns
+        // geometry and pins the panel to a screen edge.
+        let panel = DockPanel(
+            contentRect: frame,
+            styleMask: [.nonactivatingPanel, .fullSizeContentView, .borderless],
             backing: .buffered,
             defer: false
         )
-
-        // Drag any edge to resize. Below ~260pt wide the 7-day bar labels and
-        // the header start to collide, so clamp there.
-        panel.contentMinSize = NSSize(width: 260, height: 360)
-        panel.contentMaxSize = NSSize(width: 720, height: 4000)
 
         // Use .floating so the panel sits above regular app windows.
         // Note: .screenSaver is a more aggressive level that also sits above
@@ -36,31 +29,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let storedAlpha = UserDefaults.standard.object(forKey: "panelAlpha") as? Double
         panel.alphaValue = CGFloat(storedAlpha ?? 0.80)
         panel.ignoresMouseEvents = false
-        // Dragging is handled by a SwiftUI gesture in ContentView; AppKit's
-        // background-drag can't see clicks through the hosting view, and leaving
-        // it on risks double-moving if it ever does.
+        panel.isMovable = false
         panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
 
-        let hosting = NSHostingView(rootView: ContentView())
-        hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        let hosting = NSHostingView(rootView: DockRootView(dock: dock))
+        hosting.frame = NSRect(origin: .zero, size: frame.size)
         hosting.autoresizingMask = [.width, .height]
         // Don't let SwiftUI pin the window to the content's ideal size;
-        // the panel's own min/max above govern resizing.
+        // DockController sets the frame.
         hosting.sizingOptions = []
         panel.contentView = hosting
 
-        // Remember size and position across launches (saved in UserDefaults).
-        // The top-right default above applies only until the user moves it.
-        let autosaveName = "CCUsagePanel"
-        panel.setFrameUsingName(autosaveName)
-        panel.setFrameAutosaveName(autosaveName)
-
+        dock.attach(panel)
         panel.orderFrontRegardless()
         self.panel = panel
+        self.dock = dock
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

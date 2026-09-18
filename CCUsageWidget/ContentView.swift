@@ -24,6 +24,33 @@ private func modelColor(_ shortName: String) -> Color {
     }
 }
 
+private func durationString(_ seconds: TimeInterval) -> String {
+    let minutes = max(Int(seconds / 60), 0)
+    if minutes >= 24 * 60 { return "\(minutes / (24 * 60))d" }
+    return minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
+}
+
+/// Rough share of the 5h block used: this block's cost against the costliest
+/// past block. Real plan limits aren't visible locally, so it's an estimate,
+/// and it can pass 1 once this block outspends every earlier one.
+private func blockFractionUsed(_ block: UsageBlock, peak: Double?) -> Double? {
+    guard let peak, peak > 0 else { return nil }
+    return block.costUSD / peak
+}
+
+private func usedColor(_ fraction: Double) -> Color {
+    fraction < 0.5 ? accent : (fraction < 0.8 ? sonnet : hot)
+}
+
+private func percentUsed(_ fraction: Double) -> String {
+    "~\(Int((fraction * 100).rounded()))% used"
+}
+
+private func peakHelp(_ peak: Double) -> String {
+    "Estimate: this block's cost vs your costliest past 5h block (\(peak.asCost)). "
+        + "Real plan limits aren't visible locally."
+}
+
 // MARK: - Visual effect background
 
 struct VisualEffectView: NSViewRepresentable {
@@ -47,97 +74,68 @@ struct VisualEffectView: NSViewRepresentable {
 // MARK: - ContentView
 
 struct ContentView: View {
-    @StateObject private var vm = UsageViewModel()
+    @ObservedObject var vm: UsageViewModel
+    @EnvironmentObject private var dock: DockController
     @AppStorage("panelAlpha") private var panelAlpha: Double = 0.80
     @State private var showSettings = false
     @AppStorage("chartDays") private var chartDays: Int = 7
     @AppStorage("contextWindow") private var contextWindow: Int = 200_000
     @AppStorage("collapsedCards") private var collapsedCards: String = ""  // comma-separated card ids
     @State private var hoveredDay: String?
-    @State private var dragStart: (mouse: NSPoint, origin: NSPoint)?
 
+    /// The panel's background and border live in `DockRootView` so the tab
+    /// and this content read as one surface.
     var body: some View {
-        ZStack {
-            VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
-                .cornerRadius(14)
-            bg.cornerRadius(14)
+        VStack(spacing: 10) {
+            header
+            Divider().background(borderColor)
 
-            VStack(spacing: 10) {
-                header
-                Divider().background(borderColor)
-
-                if showSettings {
-                    settingsCard
-                }
-
-                if vm.report == nil && vm.isLoading {
-                    Spacer()
-                    VStack(spacing: 8) {
-                        ProgressView()
-                        Text("Fetching…")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(dimText)
-                    }
-                    Spacer()
-                } else if let error = vm.errorMessage, vm.report == nil {
-                    Spacer()
-                    VStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .foregroundColor(sonnet)
-                        Text(error)
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundColor(bodyText)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 12)
-                    }
-                    Spacer()
-                } else if let report = vm.report {
-                    ScrollView(.vertical, showsIndicators: false) {
-                        VStack(spacing: 10) {
-                            nowCard
-                            dailyCostChart(report: report)
-                            todayTokens(report: report)
-                            todayByModel(report: report)
-                            windowTotals(report: report)
-                            allTimeTotals(report: report)
-                        }
-                        .padding(.bottom, 4)
-                    }
-                } else {
-                    Spacer()
-                }
+            if showSettings {
+                settingsCard
             }
-            .padding(12)
+
+            if vm.report == nil && vm.isLoading {
+                Spacer()
+                VStack(spacing: 8) {
+                    ProgressView()
+                    Text("Fetching…")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(dimText)
+                }
+                Spacer()
+            } else if let error = vm.errorMessage, vm.report == nil {
+                Spacer()
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundColor(sonnet)
+                    Text(error)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(bodyText)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 12)
+                }
+                Spacer()
+            } else if let report = vm.report {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 10) {
+                        nowCard
+                        dailyCostChart(report: report)
+                        todayTokens(report: report)
+                        todayByModel(report: report)
+                        windowTotals(report: report)
+                        allTimeTotals(report: report)
+                    }
+                    .padding(.bottom, 4)
+                }
+            } else {
+                Spacer()
+            }
         }
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(borderColor, lineWidth: 1)
-        )
-        .gesture(windowDrag)
+        .padding(12)
         .onAppear { applyAlphaToPanel(panelAlpha) }
         .onChange(of: panelAlpha) { newValue in
             applyAlphaToPanel(newValue)
         }
-    }
-
-    /// Moves the panel by following the cursor in screen coordinates (the
-    /// gesture's own translation is useless here: the view moves with the
-    /// window mid-drag). AppKit's background-drag never fires because SwiftUI
-    /// claims the mouse-down. Buttons, the slider and the scroll area keep their
-    /// own input, so this only catches drags that start on empty chrome.
-    private var windowDrag: some Gesture {
-        DragGesture(minimumDistance: 2)
-            .onChanged { _ in
-                guard let panel = NSApp.windows.first(where: { $0 is NSPanel }) else { return }
-                let mouse = NSEvent.mouseLocation
-                let start = dragStart ?? (mouse, panel.frame.origin)
-                dragStart = start
-                panel.setFrameOrigin(NSPoint(
-                    x: start.origin.x + mouse.x - start.mouse.x,
-                    y: start.origin.y + mouse.y - start.mouse.y
-                ))
-            }
-            .onEnded { _ in dragStart = nil }
     }
 
     private func applyAlphaToPanel(_ value: Double) {
@@ -175,6 +173,14 @@ struct ContentView: View {
                     .foregroundColor(bodyText)
                 Spacer()
                 segmented([(200_000, "200K"), (1_000_000, "1M")], selection: $contextWindow)
+            }
+
+            HStack(spacing: 8) {
+                Text("Dock side")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(bodyText)
+                Spacer()
+                segmented([(DockSide.left, "Left"), (DockSide.right, "Right")], selection: $dock.side)
             }
 
             Button(action: { NSApp.terminate(nil) }) {
@@ -354,7 +360,7 @@ struct ContentView: View {
     }
 
     /// Small pill-style picker matching the widget's monospaced chrome.
-    private func segmented(_ options: [(Int, String)], selection: Binding<Int>) -> some View {
+    private func segmented<Value: Hashable>(_ options: [(Value, String)], selection: Binding<Value>) -> some View {
         HStack(spacing: 2) {
             ForEach(options.indices, id: \.self) { i in
                 let (value, label) = options[i]
@@ -468,6 +474,22 @@ struct ContentView: View {
                         .foregroundColor(accent)
                 }
                 meter(fraction: elapsed, color: accent)
+                if let peak = vm.peakBlockCost, let used = blockFractionUsed(block, peak: peak) {
+                    HStack {
+                        Text("Usage")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(bodyText)
+                        Text("vs \(peak.asCost) peak")
+                            .font(.system(size: 8, design: .monospaced))
+                            .foregroundColor(dimText)
+                        Spacer()
+                        Text(percentUsed(used))
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(usedColor(used))
+                    }
+                    .help(peakHelp(peak))
+                    meter(fraction: used, color: usedColor(used))
+                }
                 Text(blockDetail(block))
                     .font(.system(size: 8, design: .monospaced))
                     .foregroundColor(dimText)
@@ -549,12 +571,6 @@ struct ContentView: View {
             }
         }
         .frame(height: 3)
-    }
-
-    private func durationString(_ seconds: TimeInterval) -> String {
-        let minutes = max(Int(seconds / 60), 0)
-        if minutes >= 24 * 60 { return "\(minutes / (24 * 60))d" }
-        return minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
     }
 
     private func clockString(_ date: Date) -> String {
@@ -744,5 +760,185 @@ struct ContentView: View {
                 .foregroundColor(color)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - Dock
+
+/// Root of the panel: the edge tab plus the full widget beside it. Owns the
+/// view model so both share one set of fetch timers.
+struct DockRootView: View {
+    @ObservedObject var dock: DockController
+    @StateObject private var vm = UsageViewModel()
+
+    var body: some View {
+        let shape = EdgeDockedShape(side: dock.side, radius: 14)
+        HStack(spacing: 0) {
+            if dock.side == .left { tabColumn }
+            contentColumn
+            if dock.side == .right { tabColumn }
+        }
+        .background(
+            ZStack {
+                VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
+                bg
+            }
+            .clipShape(shape)
+        )
+        .overlay(shape.stroke(borderColor, lineWidth: 1))
+        .environmentObject(dock)
+    }
+
+    /// Laid out at the expanded size and clipped toward the tab, so while the
+    /// window animates the widget slides out from behind the tab instead of
+    /// being squeezed.
+    private var contentColumn: some View {
+        ContentView(vm: vm)
+            .frame(width: dock.contentSize.width, height: dock.expandedSize.height)
+            // minWidth 0: otherwise the frame keeps the child's width and the
+            // collapsed panel shows a slice of the widget instead of the tab.
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
+                   alignment: dock.side == .right ? .topTrailing : .topLeading)
+            .clipped()
+            .allowsHitTesting(dock.expanded)
+    }
+
+    private var tabColumn: some View {
+        DockTab(vm: vm, dock: dock)
+            .frame(width: DockController.tabWidth, height: DockController.tabHeight)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .overlay(alignment: dock.side == .right ? .leading : .trailing) {
+                if dock.expanded {
+                    Rectangle().fill(borderColor).frame(width: 1)
+                }
+            }
+    }
+}
+
+/// The collapsed tab: a few headline numbers. Clicking it slides the panel
+/// open or closed.
+private struct DockTab: View {
+    @ObservedObject var vm: UsageViewModel
+    @ObservedObject var dock: DockController
+    @State private var hovering = false
+    @State private var pulse = false
+
+    var body: some View {
+        Button(action: { dock.toggle() }) {
+            TimelineView(.periodic(from: Date(), by: 5)) { timeline in
+                VStack(spacing: 7) {
+                    Circle()
+                        .fill(vm.isLoading ? dimText : accent)
+                        .frame(width: 6, height: 6)
+                        .opacity(vm.isLoading ? (pulse ? 0.3 : 1.0) : 1.0)
+                        .animation(
+                            vm.isLoading
+                                ? .easeInOut(duration: 0.7).repeatForever(autoreverses: true)
+                                : .default,
+                            value: pulse
+                        )
+                        .onAppear { pulse = true }
+
+                    VStack(spacing: 3) {
+                        label("5H LEFT")
+                        value(blockLeft(now: timeline.date), color: accent)
+                        if let used = usageUsed(now: timeline.date) {
+                            value(percentUsed(used), color: usedColor(used))
+                        }
+                    }
+                    .help(vm.peakBlockCost.map(peakHelp) ?? "")
+
+                    Rectangle().fill(borderColor).frame(height: 1)
+
+                    VStack(spacing: 3) {
+                        label("TODAY")
+                        value(today.map { $0.totalCost.asCost } ?? "—", color: bodyText)
+                        value(today.map { $0.totalTokens.compactTokens } ?? "—", color: haiku)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: chevron)
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(hovering ? accent : dimText)
+                }
+                .padding(.vertical, 10)
+                .padding(.horizontal, 6)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(hovering ? Color.white.opacity(0.05) : Color.clear)
+                .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(dock.expanded ? "Collapse" : "Expand")
+    }
+
+    /// Only today's own row; unlike the cards, don't fall back to the last day.
+    private var today: DailyUsage? {
+        guard let report = vm.report else { return nil }
+        return report.daily.first(where: { $0.isToday })
+    }
+
+    private func blockLeft(now: Date) -> String {
+        guard let block = vm.activeBlock, block.endTime > now else { return "—" }
+        return durationString(block.endTime.timeIntervalSince(now))
+    }
+
+    private func usageUsed(now: Date) -> Double? {
+        guard let block = vm.activeBlock, block.endTime > now else { return nil }
+        return blockFractionUsed(block, peak: vm.peakBlockCost)
+    }
+
+    /// Points the way the panel will move when clicked.
+    private var chevron: String {
+        let opensLeft = dock.side == .right
+        return dock.expanded == opensLeft ? "chevron.right" : "chevron.left"
+    }
+
+    private func label(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 7, weight: .semibold, design: .monospaced))
+            .tracking(1)
+            .foregroundColor(dimText)
+            .lineLimit(1)
+    }
+
+    private func value(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .foregroundColor(color)
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+    }
+}
+
+/// Rounded only on the inner side; the outer side is flush with the screen
+/// edge. (`UnevenRoundedRectangle` needs macOS 14.)
+private struct EdgeDockedShape: Shape {
+    let side: DockSide
+    let radius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let r = min(radius, rect.width / 2, rect.height / 2)
+        let left = side == .right  // which vertical side gets rounded corners
+        let (tl, bl, tr, br) = left ? (r, r, 0, 0) : (0, 0, r, r)
+
+        var p = Path()
+        p.move(to: CGPoint(x: rect.minX + tl, y: rect.minY))
+        p.addLine(to: CGPoint(x: rect.maxX - tr, y: rect.minY))
+        p.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.minY),
+                 tangent2End: CGPoint(x: rect.maxX, y: rect.minY + tr), radius: tr)
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - br))
+        p.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.maxY),
+                 tangent2End: CGPoint(x: rect.maxX - br, y: rect.maxY), radius: br)
+        p.addLine(to: CGPoint(x: rect.minX + bl, y: rect.maxY))
+        p.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.maxY),
+                 tangent2End: CGPoint(x: rect.minX, y: rect.maxY - bl), radius: bl)
+        p.addLine(to: CGPoint(x: rect.minX, y: rect.minY + tl))
+        p.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.minY),
+                 tangent2End: CGPoint(x: rect.minX + tl, y: rect.minY), radius: tl)
+        p.closeSubpath()
+        return p
     }
 }
